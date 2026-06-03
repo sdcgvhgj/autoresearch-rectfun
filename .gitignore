@@ -1,0 +1,5 @@
+solve
+eval_output/
+run.log
+results.tsv
+*.o
