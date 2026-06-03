@@ -3,3 +3,4 @@ eval_output/
 run.log
 results.tsv
 *.o
+rectfun_benchmark.zip
