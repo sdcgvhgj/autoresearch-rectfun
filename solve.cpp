@@ -200,14 +200,13 @@ int main() {
     // than the input (e.g. isolated rectangles), fall back to the input itself.
     if (best->size() > r.size()) best = &r;
 
-    // Try a 1-round identical-edge merge, which wins on grid-like inputs.
-    // Gate deterministically on "decomposition found structure" (best < n): this
-    // excludes the slow isolated-rectangle cases (where merge is useless and the
-    // decomposition is already near the time budget). A wall-clock cap is a
-    // secondary safety net against TLE.
+    // Try a 1-round identical-edge merge, which wins on grid-like inputs
+    // (including some where decomposition alone yields m >= n, e.g. c04). Gate on
+    // elapsed time: fast cases (~<460ms here) get the merge; the slow isolated-
+    // rectangle cases (~720ms, where merge is useless) are skipped to avoid TLE.
     vector<Rect> merged;
     long elapsed = duration_cast<milliseconds>(steady_clock::now() - t0).count();
-    if (best->size() < r.size() && elapsed < 700) {
+    if (elapsed < 550) {
         merged = r;
         mergeRound(merged);
         if (merged.size() < best->size()) best = &merged;
