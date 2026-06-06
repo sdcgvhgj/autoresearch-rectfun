@@ -122,18 +122,6 @@ If a run crashes (compile error, segfault, TLE on many cases, etc.):
 - **Do NOT re-read files you haven't changed** — if you didn't modify `program.md` or `runner.py`, don't re-read them every loop iteration. Only re-read `solve.cpp` if you need to recall its current state.
 - **Keep commit messages short** — one line, under 72 chars.
 
-## Algorithmic hints
-
-The problem is essentially minimum rectangle partition of a rectilinear polygon union. Some directions worth exploring (in roughly increasing sophistication):
-
-1. **Coordinate compression + column sweep**: compress x-coords, sweep by column, merge adjacent intervals.
-2. **Horizontal/vertical merge passes**: greedily merge rectangles that share an edge and can form a larger rectangle.
-3. **Sweep line with interval merging**: sort by one axis, merge overlapping/adjacent intervals on the other axis.
-4. **T-vertex elimination**: find T-shaped junctions in the boundary and remove internal edges.
-5. **Maximal rectangle extraction**: find maximal empty rectangles within the filled region.
-
-Start simple (approaches 1-2), measure, then go deeper if needed.
-
 ## NEVER STOP
 
 Once the experiment loop has begun, do NOT pause to ask if you should continue. Do NOT ask "should I keep going?". The human might be asleep. You are autonomous. The loop runs until the human interrupts you, period.
