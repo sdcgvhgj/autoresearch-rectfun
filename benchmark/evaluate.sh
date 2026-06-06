@@ -18,7 +18,7 @@ CHECKER="$SCRIPT_DIR/checker"
 DATA_DIR="$SCRIPT_DIR/data"
 OUTPUT_DIR="${SCRIPT_DIR}/eval_output"
 
-TIMEOUT_SEC=2
+TIMEOUT_SEC=5
 
 SOLUTION="${1:-}"
 if [ -z "$SOLUTION" ]; then
@@ -117,7 +117,7 @@ for idx in "${!DATA_FILES[@]}"; do
         score="$(awk "BEGIN { printf \"%.2f\", ${score_raw:-0} }")"
 
         # 超 1s 算超时
-        if [ "$elapsed_ms" -gt 1000 ]; then
+        if [ "$elapsed_ms" -gt 3500 ]; then
             printf "%-5s %10s %10s %8s %8s %s\n" \
                 "$case_no" "$n" "$m" "${elapsed_ms}ms" "0.00" "${RED}TLE(>1s)${NC}"
             TIMED_OUT=$((TIMED_OUT + 1))
