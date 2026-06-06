@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <climits>
 #include <cstdint>
+#include <chrono>
 using namespace std;
+using namespace std::chrono;
 
 struct Rect { int x1, x2, y1, y2; };
 
@@ -132,7 +134,35 @@ static void decompose(const vector<Rect>& rects, vector<Rect>& res,
     }
 }
 
+// One round of identical-edge merge (vertical then horizontal). A single round
+// captures essentially the full benefit on these inputs.
+static void mergeRound(vector<Rect>& r) {
+    sort(r.begin(), r.end(), [](const Rect& a, const Rect& b) {
+        if (a.x1 != b.x1) return a.x1 < b.x1;
+        if (a.x2 != b.x2) return a.x2 < b.x2;
+        return a.y1 < b.y1;
+    });
+    { vector<Rect> o; o.reserve(r.size());
+      for (const Rect& c : r) {
+          if (!o.empty()) { Rect& l = o.back();
+              if (l.x1 == c.x1 && l.x2 == c.x2 && l.y2 + 1 == c.y1) { l.y2 = c.y2; continue; } }
+          o.push_back(c);
+      } r.swap(o); }
+    sort(r.begin(), r.end(), [](const Rect& a, const Rect& b) {
+        if (a.y1 != b.y1) return a.y1 < b.y1;
+        if (a.y2 != b.y2) return a.y2 < b.y2;
+        return a.x1 < b.x1;
+    });
+    { vector<Rect> o; o.reserve(r.size());
+      for (const Rect& c : r) {
+          if (!o.empty()) { Rect& l = o.back();
+              if (l.y1 == c.y1 && l.y2 == c.y2 && l.x2 + 1 == c.x1) { l.x2 = c.x2; continue; } }
+          o.push_back(c);
+      } r.swap(o); }
+}
+
 int main() {
+    auto t0 = steady_clock::now();
     size_t len;
     char* data = readAll(len);
     char* p = data;
@@ -169,6 +199,19 @@ int main() {
     // The checker requires m <= n. If a decomposition produced more rectangles
     // than the input (e.g. isolated rectangles), fall back to the input itself.
     if (best->size() > r.size()) best = &r;
+
+    // Try a 1-round identical-edge merge, which wins on grid-like inputs.
+    // Gate deterministically on "decomposition found structure" (best < n): this
+    // excludes the slow isolated-rectangle cases (where merge is useless and the
+    // decomposition is already near the time budget). A wall-clock cap is a
+    // secondary safety net against TLE.
+    vector<Rect> merged;
+    long elapsed = duration_cast<milliseconds>(steady_clock::now() - t0).count();
+    if (best->size() < r.size() && elapsed < 700) {
+        merged = r;
+        mergeRound(merged);
+        if (merged.size() < best->size()) best = &merged;
+    }
 
     ocap = 1 << 24; opos = 0; obuf = (char*)malloc(ocap);
     writeInt((int)best->size()); writeChar('\n');
