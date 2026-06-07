@@ -251,6 +251,130 @@ static void computeComponents(const vector<Rect>& r, int maxX, int maxY) {
 }
 
 
+// ---------- per-component optimal partition (concave-vertex chord matching) ----------
+static bool kuhn(int u, vector<vector<int>>& adj, vector<int>& mv, vector<char>& used) {
+    for (int v : adj[u]) if (!used[v]) { used[v] = 1;
+        if (mv[v] == -1 || kuhn(mv[v], adj, mv, used)) { mv[v] = u; return true; } }
+    return false;
+}
+
+// Optimal rectilinear partition of one connected component's union, on compressed
+// cells. Appends output rectangles (real coords, tagged `comp`) to `out`.
+// Returns the optimal rectangle count, or -1 if the component exceeds the cell cap.
+static int optimizeComponent(const vector<Rect>& rs, int comp, vector<RectC>& out, size_t CAP) {
+    int N = (int)rs.size();
+    vector<int> xsv, ysv; xsv.reserve(2 * N); ysv.reserve(2 * N);
+    for (const Rect& r : rs) { xsv.push_back(r.x1); xsv.push_back(r.x2 + 1);
+                              ysv.push_back(r.y1); ysv.push_back(r.y2 + 1); }
+    sort(xsv.begin(), xsv.end()); xsv.erase(unique(xsv.begin(), xsv.end()), xsv.end());
+    sort(ysv.begin(), ysv.end()); ysv.erase(unique(ysv.begin(), ysv.end()), ysv.end());
+    int cx = (int)xsv.size() - 1, cy = (int)ysv.size() - 1;
+    if (cx <= 0 || cy <= 0) return -1;
+    if ((size_t)cx * cy > CAP) return -1;
+    vector<char> occ((size_t)cx * cy, 0);
+    {
+        vector<int> ps((size_t)(cx + 1) * (cy + 1), 0);
+        for (const Rect& r : rs) {
+            int a = (int)(lower_bound(xsv.begin(), xsv.end(), r.x1) - xsv.begin());
+            int b = (int)(lower_bound(xsv.begin(), xsv.end(), r.x2 + 1) - xsv.begin());
+            int c = (int)(lower_bound(ysv.begin(), ysv.end(), r.y1) - ysv.begin());
+            int d = (int)(lower_bound(ysv.begin(), ysv.end(), r.y2 + 1) - ysv.begin());
+            ps[(size_t)a * (cy + 1) + c]++; ps[(size_t)b * (cy + 1) + c]--;
+            ps[(size_t)a * (cy + 1) + d]--; ps[(size_t)b * (cy + 1) + d]++;
+        }
+        for (int i = 0; i <= cx; ++i) for (int j = 0; j <= cy; ++j) {
+            int v = ps[(size_t)i * (cy + 1) + j];
+            if (i) v += ps[(size_t)(i - 1) * (cy + 1) + j];
+            if (j) v += ps[(size_t)i * (cy + 1) + j - 1];
+            if (i && j) v -= ps[(size_t)(i - 1) * (cy + 1) + j - 1];
+            ps[(size_t)i * (cy + 1) + j] = v;
+            if (i < cx && j < cy) occ[(size_t)i * cy + j] = (v > 0);
+        }
+    }
+    auto inside = [&](int i, int j) { return i >= 0 && i < cx && j >= 0 && j < cy && occ[(size_t)i * cy + j]; };
+    vector<pair<int,int>> cav;
+    for (int i = 0; i <= cx; ++i) for (int j = 0; j <= cy; ++j) {
+        int bl = inside(i-1,j-1), br = inside(i,j-1), tl = inside(i-1,j), tr = inside(i,j);
+        if (bl + br + tl + tr == 3) cav.push_back({i, j});
+    }
+    auto hseg = [&](int x, int j) { return inside(x, j-1) && inside(x, j); };
+    auto vseg = [&](int i, int y) { return inside(i-1, y) && inside(i, y); };
+    vector<array<int,3>> H, V;
+    {
+        vector<vector<int>> byrow(cy + 1), bycol(cx + 1);
+        for (auto& p : cav) { byrow[p.second].push_back(p.first); bycol[p.first].push_back(p.second); }
+        for (int j = 0; j <= cy; ++j) { auto& xs = byrow[j]; sort(xs.begin(), xs.end());
+            for (size_t t = 0; t + 1 < xs.size(); ++t) { int a = xs[t], b = xs[t+1]; bool ok = true;
+                for (int x = a; x < b; ++x) if (!hseg(x, j)) { ok = false; break; }
+                if (ok) H.push_back({{a, b, j}}); } }
+        for (int i = 0; i <= cx; ++i) { auto& ys = bycol[i]; sort(ys.begin(), ys.end());
+            for (size_t t = 0; t + 1 < ys.size(); ++t) { int a = ys[t], b = ys[t+1]; bool ok = true;
+                for (int y = a; y < b; ++y) if (!vseg(i, y)) { ok = false; break; }
+                if (ok) V.push_back({{i, a, b}}); } }
+    }
+    int nh = (int)H.size(), nv = (int)V.size();
+    vector<vector<int>> adj(nh);
+    for (int h = 0; h < nh; ++h) { int a = H[h][0], b = H[h][1], jj = H[h][2];
+        for (int v = 0; v < nv; ++v) { int ii = V[v][0], c = V[v][1], d = V[v][2];
+            if (a <= ii && ii <= b && c <= jj && jj <= d) adj[h].push_back(v); } }
+    vector<int> mv(nv, -1), mh(nh, -1); vector<char> used;
+    for (int u = 0; u < nh; ++u) { used.assign(nv, 0); if (kuhn(u, adj, mv, used)) ; }
+    for (int v = 0; v < nv; ++v) if (mv[v] != -1) mh[mv[v]] = v;
+    vector<char> visH(nh, 0), visV(nv, 0); vector<int> stk;
+    for (int u = 0; u < nh; ++u) if (mh[u] == -1) { visH[u] = 1; stk.push_back(u); }
+    while (!stk.empty()) { int u = stk.back(); stk.pop_back();
+        for (int v : adj[u]) if (!visV[v]) { visV[v] = 1;
+            if (mv[v] != -1 && !visH[mv[v]]) { visH[mv[v]] = 1; stk.push_back(mv[v]); } } }
+    vector<char> Hw((size_t)cx * (cy + 1), 0), Vw((size_t)(cx + 1) * cy, 0);
+    auto setH = [&](int x, int j) { if (x >= 0 && x < cx && j >= 0 && j <= cy) Hw[(size_t)x * (cy + 1) + j] = 1; };
+    auto setV = [&](int i, int y) { if (i >= 0 && i <= cx && y >= 0 && y < cy) Vw[(size_t)i * cy + y] = 1; };
+    auto getH = [&](int x, int j) { return x >= 0 && x < cx && j >= 0 && j <= cy && Hw[(size_t)x * (cy + 1) + j]; };
+    auto getV = [&](int i, int y) { return i >= 0 && i <= cx && y >= 0 && y < cy && Vw[(size_t)i * cy + y]; };
+    for (int i = 0; i < cx; ++i) for (int j = 0; j < cy; ++j) if (inside(i, j)) {
+        if (!inside(i, j-1)) setH(i, j);
+        if (!inside(i, j+1)) setH(i, j+1);
+        if (!inside(i-1, j)) setV(i, j);
+        if (!inside(i+1, j)) setV(i+1, j);
+    }
+    vector<char> resolved((size_t)(cx + 1) * (cy + 1), 0);
+    auto mark = [&](int i, int j) { resolved[(size_t)i * (cy + 1) + j] = 1; };
+    auto isres = [&](int i, int j) { return resolved[(size_t)i * (cy + 1) + j]; };
+    for (int h = 0; h < nh; ++h) if (visH[h]) { int a = H[h][0], b = H[h][1], j = H[h][2];
+        for (int x = a; x < b; ++x) setH(x, j); mark(a, j); mark(b, j); }
+    for (int v = 0; v < nv; ++v) if (!visV[v]) { int i = V[v][0], c = V[v][1], d = V[v][2];
+        for (int y = c; y < d; ++y) setV(i, y); mark(i, c); mark(i, d); }
+    auto vwallAt = [&](int x, int j) { return getV(x, j-1) || getV(x, j); };
+    auto hwallAt = [&](int i, int y) { return getH(i-1, y) || getH(i, y); };
+    for (auto& p : cav) { int i = p.first, j = p.second; if (isres(i, j)) continue;
+        int bl = inside(i-1,j-1), br = inside(i,j-1), tl = inside(i-1,j), tr = inside(i,j);
+        bool drew = false;
+        if (br && tr) { int x = i; while (hseg(x, j)) { setH(x, j); ++x; if (vwallAt(x, j)) break; } drew = true; }
+        else if (bl && tl) { int x = i; while (hseg(x-1, j)) { setH(x-1, j); --x; if (vwallAt(x, j)) break; } drew = true; }
+        if (!drew) {
+            if (tl && tr) { int y = j; while (vseg(i, y)) { setV(i, y); ++y; if (hwallAt(i, y)) break; } }
+            else if (bl && br) { int y = j; while (vseg(i, y-1)) { setV(i, y-1); --y; if (hwallAt(i, y)) break; } }
+        }
+    }
+    vector<char> vis((size_t)cx * cy, 0); vector<int> fst; int cnt = 0;
+    for (int si = 0; si < cx; ++si) for (int sj = 0; sj < cy; ++sj) {
+        if (!inside(si, sj) || vis[(size_t)si * cy + sj]) continue;
+        fst.clear(); fst.push_back(si * cy + sj); vis[(size_t)si * cy + sj] = 1;
+        int mni = si, mxi = si, mnj = sj, mxj = sj;
+        while (!fst.empty()) { int cur = fst.back(); fst.pop_back();
+            int i = cur / cy, j = cur % cy;
+            mni = min(mni, i); mxi = max(mxi, i); mnj = min(mnj, j); mxj = max(mxj, j);
+            if (inside(i+1,j) && !getV(i+1,j) && !vis[(size_t)(i+1)*cy+j]) { vis[(size_t)(i+1)*cy+j]=1; fst.push_back((i+1)*cy+j); }
+            if (inside(i-1,j) && !getV(i,j)   && !vis[(size_t)(i-1)*cy+j]) { vis[(size_t)(i-1)*cy+j]=1; fst.push_back((i-1)*cy+j); }
+            if (inside(i,j+1) && !getH(i,j+1) && !vis[(size_t)i*cy+j+1])   { vis[(size_t)i*cy+j+1]=1;   fst.push_back(i*cy+j+1); }
+            if (inside(i,j-1) && !getH(i,j)   && !vis[(size_t)i*cy+j-1])   { vis[(size_t)i*cy+j-1]=1;   fst.push_back(i*cy+j-1); }
+        }
+        out.push_back({xsv[mni], xsv[mxi+1]-1, ysv[mnj], ysv[mxj+1]-1, comp});
+        ++cnt;
+    }
+    return cnt;
+}
+
+
 int main() {
     auto t0 = steady_clock::now();
     size_t len;
@@ -294,32 +418,64 @@ int main() {
     for (RectC& q : horiz) q = {q.y1, q.y2, q.x1, q.x2, q.comp}; // transpose back
     vmergeOnce(horiz);
 
-    // Per-component direction choice: minimise rectangles per connected component.
+    // Per-component counts for the heuristic fallback (vert / horiz / input).
     vector<int> Vc(n, 0), Hc(n, 0), Nc(n, 0);
     for (int i = 0; i < n; ++i) ++Nc[comp[i]];
     for (const RectC& q : vert) ++Vc[q.comp];
     for (const RectC& q : horiz) ++Hc[q.comp];
-    vector<char> dec(n, 2);
+
+    // Bucket rect indices by component root (counting sort).
+    vector<int> bstart(n + 1, 0);
+    for (int i = 0; i < n; ++i) ++bstart[comp[i] + 1];
+    for (int i = 0; i < n; ++i) bstart[i + 1] += bstart[i];
+    vector<int> bidx(n);
+    { vector<int> pos(bstart.begin(), bstart.end());
+      for (int i = 0; i < n; ++i) bidx[pos[comp[i]]++] = i; }
+
+    // Optimal chord partition for SMALL mergeable components, under a strict wall
+    // budget that reserves time for output so no case nears the 1s limit. Large or
+    // unmergeable components fall back to the best single direction (no chord gain).
+    vector<char> dec(n, 2), useOpt(n, 0);
+    vector<RectC> optOut; optOut.reserve(1 << 16);
+    vector<Rect> tmp;
+    const size_t CAP = 1 << 13;
+    const long long BUDGET_MS = 600;
     size_t total = 0;
-    for (int i = 0; i < n; ++i) {
-        if (par[i] != i) continue; // only roots
-        int best = Nc[i]; char d = 2;
-        if (Vc[i] < best) { best = Vc[i]; d = 0; }
-        if (Hc[i] < best) { best = Hc[i]; d = 1; }
-        dec[i] = d; total += best;
+    for (int root = 0; root < n; ++root) {
+        if (par[root] != root) continue;
+        if (Nc[root] == 1) { dec[root] = 2; total += 1; continue; }
+        bool done = false;
+        if (Nc[root] >= 2 && Nc[root] <= 48 && min(Vc[root], Hc[root]) < Nc[root] &&
+            duration_cast<milliseconds>(steady_clock::now() - t0).count() < BUDGET_MS) {
+            int s = bstart[root], e = bstart[root + 1];
+            tmp.clear(); tmp.reserve(e - s);
+            for (int k = s; k < e; ++k) tmp.push_back(r[bidx[k]]);
+            int oc = optimizeComponent(tmp, root, optOut, CAP);
+            if (oc >= 0) { useOpt[root] = 1; total += oc; done = true; }
+        }
+        if (!done) {
+            int best = Nc[root]; char d = 2;
+            if (Vc[root] < best) { best = Vc[root]; d = 0; }
+            if (Hc[root] < best) { best = Hc[root]; d = 1; }
+            dec[root] = d; total += best;
+        }
     }
 
     ocap = 1 << 24; opos = 0; obuf = (char*)malloc(ocap);
     writeInt((int)total); writeChar('\n');
-    for (const RectC& q : vert) if (dec[q.comp] == 0) {
+    for (const RectC& q : optOut) {
         writeInt(q.x1); writeChar(' '); writeInt(q.x2); writeChar(' ');
         writeInt(q.y1); writeChar(' '); writeInt(q.y2); writeChar('\n');
     }
-    for (const RectC& q : horiz) if (dec[q.comp] == 1) {
+    for (const RectC& q : vert) if (dec[q.comp] == 0 && !useOpt[q.comp]) {
         writeInt(q.x1); writeChar(' '); writeInt(q.x2); writeChar(' ');
         writeInt(q.y1); writeChar(' '); writeInt(q.y2); writeChar('\n');
     }
-    for (int i = 0; i < n; ++i) if (dec[comp[i]] == 2) {
+    for (const RectC& q : horiz) if (dec[q.comp] == 1 && !useOpt[q.comp]) {
+        writeInt(q.x1); writeChar(' '); writeInt(q.x2); writeChar(' ');
+        writeInt(q.y1); writeChar(' '); writeInt(q.y2); writeChar('\n');
+    }
+    for (int i = 0; i < n; ++i) if (dec[comp[i]] == 2 && !useOpt[comp[i]]) {
         writeInt(r[i].x1); writeChar(' '); writeInt(r[i].x2); writeChar(' ');
         writeInt(r[i].y1); writeChar(' '); writeInt(r[i].y2); writeChar('\n');
     }
