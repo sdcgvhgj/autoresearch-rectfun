@@ -134,31 +134,39 @@ static void decompose(const vector<Rect>& rects, vector<Rect>& res,
     }
 }
 
-// One round of identical-edge merge (vertical then horizontal). A single round
-// captures essentially the full benefit on these inputs.
-static void mergeRound(vector<Rect>& r) {
-    sort(r.begin(), r.end(), [](const Rect& a, const Rect& b) {
-        if (a.x1 != b.x1) return a.x1 < b.x1;
-        if (a.x2 != b.x2) return a.x2 < b.x2;
-        return a.y1 < b.y1;
-    });
-    { vector<Rect> o; o.reserve(r.size());
-      for (const Rect& c : r) {
-          if (!o.empty()) { Rect& l = o.back();
-              if (l.x1 == c.x1 && l.x2 == c.x2 && l.y2 + 1 == c.y1) { l.y2 = c.y2; continue; } }
-          o.push_back(c);
-      } r.swap(o); }
+// Single pass merging x-adjacent rectangles with identical y-range. Applied to a
+// vertical decomposition's output it recovers the true minimal vertical
+// decomposition: continuation cuts (an interval continued across a column by a
+// different atom configuration) appear as x-adjacent, equal-y rectangles.
+static void hmergeOnce(vector<Rect>& r) {
     sort(r.begin(), r.end(), [](const Rect& a, const Rect& b) {
         if (a.y1 != b.y1) return a.y1 < b.y1;
         if (a.y2 != b.y2) return a.y2 < b.y2;
         return a.x1 < b.x1;
     });
-    { vector<Rect> o; o.reserve(r.size());
-      for (const Rect& c : r) {
-          if (!o.empty()) { Rect& l = o.back();
-              if (l.y1 == c.y1 && l.y2 == c.y2 && l.x2 + 1 == c.x1) { l.x2 = c.x2; continue; } }
-          o.push_back(c);
-      } r.swap(o); }
+    size_t o = 0;
+    for (size_t i = 0; i < r.size(); ++i) {
+        if (o && r[o-1].y1 == r[i].y1 && r[o-1].y2 == r[i].y2 && r[o-1].x2 + 1 == r[i].x1)
+            r[o-1].x2 = r[i].x2;
+        else r[o++] = r[i];
+    }
+    r.resize(o);
+}
+// Single pass merging y-adjacent rectangles with identical x-range; recovers the
+// true minimal horizontal decomposition from a horizontal decomposition's output.
+static void vmergeOnce(vector<Rect>& r) {
+    sort(r.begin(), r.end(), [](const Rect& a, const Rect& b) {
+        if (a.x1 != b.x1) return a.x1 < b.x1;
+        if (a.x2 != b.x2) return a.x2 < b.x2;
+        return a.y1 < b.y1;
+    });
+    size_t o = 0;
+    for (size_t i = 0; i < r.size(); ++i) {
+        if (o && r[o-1].x1 == r[i].x1 && r[o-1].x2 == r[i].x2 && r[o-1].y2 + 1 == r[i].y1)
+            r[o-1].y2 = r[i].y2;
+        else r[o++] = r[i];
+    }
+    r.resize(o);
 }
 
 int main() {
@@ -191,25 +199,27 @@ int main() {
     vector<Rect> horiz; horiz.reserve(r.size());
     decompose(rt, horiz, maxY, ev, sorted, cnt);
 
-    vector<Rect>* best = &vert;
-    if (horiz.size() < vert.size()) {
-        for (Rect& q : horiz) q = {q.y1, q.y2, q.x1, q.x2};
-        best = &horiz;
-    }
-    // The checker requires m <= n. If a decomposition produced more rectangles
-    // than the input (e.g. isolated rectangles), fall back to the input itself.
-    if (best->size() > r.size()) best = &r;
+    // Transpose horiz back to original coordinates.
+    for (Rect& q : horiz) q = {q.y1, q.y2, q.x1, q.x2};
 
-    // Try a 1-round identical-edge merge, which wins on grid-like inputs
-    // (including some where decomposition alone yields m >= n, e.g. c04). Gate on
-    // elapsed time: fast cases (~<460ms here) get the merge; the slow isolated-
-    // rectangle cases (~720ms, where merge is useless) are skipped to avoid TLE.
-    vector<Rect> merged;
-    long elapsed = duration_cast<milliseconds>(steady_clock::now() - t0).count();
-    if (elapsed < 550) {
-        merged = r;
-        mergeRound(merged);
-        if (merged.size() < best->size()) best = &merged;
+    size_t nn = r.size();
+    vector<Rect>* best = &r; // input is always a valid partition with m = n
+    if (vert.size() < best->size()) best = &vert;
+    if (horiz.size() < best->size()) best = &horiz;
+
+    // A single directional merge of each raw decomposition recovers its true
+    // minimal decomposition. Gate on size <= n: this skips the isolated-rectangle
+    // cases (decomposition emits m > n there, where merging is useless and the
+    // sweep is already near the time budget) while still catching grid-like cases
+    // whose decomposition is exactly n but collapses far below n after merging.
+    vector<Rect> mv, mh;
+    if (vert.size() <= nn) {
+        mv = vert; hmergeOnce(mv);
+        if (mv.size() < best->size()) best = &mv;
+    }
+    if (horiz.size() <= nn) {
+        mh = horiz; vmergeOnce(mh);
+        if (mh.size() < best->size()) best = &mh;
     }
 
     ocap = 1 << 24; opos = 0; obuf = (char*)malloc(ocap);
