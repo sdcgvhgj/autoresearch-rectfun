@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <climits>
 #include <cstdint>
+#include <array>
 #include <chrono>
 using namespace std;
 using namespace std::chrono;
@@ -136,34 +137,57 @@ static void decompose(const vector<Rect>& rects, const vector<int>& comp, vector
     }
 }
 
-// Single directional merges (preserve component tag).
-static void hmergeOnce(vector<RectC>& r) {
-    sort(r.begin(), r.end(), [](const RectC& a, const RectC& b) {
-        if (a.y1 != b.y1) return a.y1 < b.y1;
-        if (a.y2 != b.y2) return a.y2 < b.y2;
-        return a.x1 < b.x1;
-    });
-    size_t o = 0;
-    for (size_t i = 0; i < r.size(); ++i) {
-        if (o && r[o-1].y1 == r[i].y1 && r[o-1].y2 == r[i].y2 && r[o-1].x2 + 1 == r[i].x1)
-            r[o-1].x2 = r[i].x2;
-        else r[o++] = r[i];
+// LSD radix sort of indices [0,n) by 64-bit keys[i] (assumes < 2^56).
+static vector<int> radixOrd, radixTmp;
+static void radixSortIdx(const vector<uint64_t>& keys) {
+    int n = (int)keys.size();
+    radixOrd.resize(n); radixTmp.resize(n);
+    for (int i = 0; i < n; ++i) radixOrd[i] = i;
+    int* a = radixOrd.data(); int* b = radixTmp.data();
+    int cnt[256];
+    for (int shift = 0; shift < 64; shift += 8) {
+        int c0[256]; for (int i = 0; i < 256; ++i) c0[i] = 0;
+        for (int i = 0; i < n; ++i) ++c0[(keys[a[i]] >> shift) & 255];
+        bool single = false;
+        for (int i = 0; i < 256; ++i) if (c0[i] == n) { single = true; break; }
+        if (single) continue;
+        int s = 0; for (int i = 0; i < 256; ++i) { cnt[i] = s; s += c0[i]; }
+        for (int i = 0; i < n; ++i) { uint64_t k = keys[a[i]]; b[cnt[(k >> shift) & 255]++] = a[i]; }
+        std::swap(a, b);
     }
-    r.resize(o);
+    if (a != radixOrd.data()) radixOrd.swap(radixTmp);
+}
+
+// Single directional merges (preserve component tag).
+static vector<RectC> mergeTmp;
+static vector<uint64_t> mergeKey;
+static void hmergeOnce(vector<RectC>& r) {
+    int n = (int)r.size(); mergeKey.resize(n);
+    for (int i = 0; i < n; ++i)
+        mergeKey[i] = ((uint64_t)(uint32_t)r[i].y1 << 36) | ((uint64_t)(uint32_t)r[i].y2 << 15) | (uint32_t)r[i].x1;
+    radixSortIdx(mergeKey);
+    mergeTmp.clear(); mergeTmp.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        const RectC& c = r[radixOrd[i]];
+        if (!mergeTmp.empty()) { RectC& p = mergeTmp.back();
+            if (p.y1 == c.y1 && p.y2 == c.y2 && p.x2 + 1 == c.x1) { p.x2 = c.x2; continue; } }
+        mergeTmp.push_back(c);
+    }
+    r.swap(mergeTmp);
 }
 static void vmergeOnce(vector<RectC>& r) {
-    sort(r.begin(), r.end(), [](const RectC& a, const RectC& b) {
-        if (a.x1 != b.x1) return a.x1 < b.x1;
-        if (a.x2 != b.x2) return a.x2 < b.x2;
-        return a.y1 < b.y1;
-    });
-    size_t o = 0;
-    for (size_t i = 0; i < r.size(); ++i) {
-        if (o && r[o-1].x1 == r[i].x1 && r[o-1].x2 == r[i].x2 && r[o-1].y2 + 1 == r[i].y1)
-            r[o-1].y2 = r[i].y2;
-        else r[o++] = r[i];
+    int n = (int)r.size(); mergeKey.resize(n);
+    for (int i = 0; i < n; ++i)
+        mergeKey[i] = ((uint64_t)(uint32_t)r[i].x1 << 36) | ((uint64_t)(uint32_t)r[i].x2 << 21) | (uint32_t)r[i].y1;
+    radixSortIdx(mergeKey);
+    mergeTmp.clear(); mergeTmp.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        const RectC& c = r[radixOrd[i]];
+        if (!mergeTmp.empty()) { RectC& p = mergeTmp.back();
+            if (p.x1 == c.x1 && p.x2 == c.x2 && p.y2 + 1 == c.y1) { p.y2 = c.y2; continue; } }
+        mergeTmp.push_back(c);
     }
-    r.resize(o);
+    r.swap(mergeTmp);
 }
 
 // ---------- connected components (edge adjacency) ----------
@@ -226,6 +250,7 @@ static void computeComponents(const vector<Rect>& r, int maxX, int maxY) {
     }
 }
 
+
 int main() {
     auto t0 = steady_clock::now();
     size_t len;
@@ -255,28 +280,25 @@ int main() {
 
     vector<Ev> ev, sorted; vector<int> cnt;
 
-    // A decomposition with raw size > n is useless globally (isolated-style); skip
-    // its (slow) recovery merge. Such directions are never chosen per component
-    // (their per-component counts stay inflated), so no score is lost and the
-    // worst cases (c04/c15-18) avoid an expensive merge over >n rectangles.
+    // Always run the recovery merge: even when the global decomposition fragments
+    // above n, individual (non-singleton) components still shrink, which is exactly
+    // what the per-component selection needs to reduce m on scattered cases (c15-18).
     vector<RectC> vert; vert.reserve(r.size());
     decompose(r, comp, vert, maxX, ev, sorted, cnt);
-    if (vert.size() <= (size_t)n) hmergeOnce(vert);
+    hmergeOnce(vert);
 
     vector<Rect> rt(r.size());
     for (size_t i = 0; i < r.size(); ++i) rt[i] = {r[i].y1, r[i].y2, r[i].x1, r[i].x2};
     vector<RectC> horiz; horiz.reserve(r.size());
     decompose(rt, comp, horiz, maxY, ev, sorted, cnt);
     for (RectC& q : horiz) q = {q.y1, q.y2, q.x1, q.x2, q.comp}; // transpose back
-    if (horiz.size() <= (size_t)n) vmergeOnce(horiz);
+    vmergeOnce(horiz);
 
     // Per-component direction choice: minimise rectangles per connected component.
-    // V_c / H_c = rectangle counts from each decomposition; n_c = input count.
     vector<int> Vc(n, 0), Hc(n, 0), Nc(n, 0);
     for (int i = 0; i < n; ++i) ++Nc[comp[i]];
     for (const RectC& q : vert) ++Vc[q.comp];
     for (const RectC& q : horiz) ++Hc[q.comp];
-    // dec: 0 = vert, 1 = horiz, 2 = input (each <= n_c, so total <= n).
     vector<char> dec(n, 2);
     size_t total = 0;
     for (int i = 0; i < n; ++i) {
