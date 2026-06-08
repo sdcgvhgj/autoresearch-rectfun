@@ -446,23 +446,33 @@ int main() {
     const size_t CAP = 1 << 22;
     const long long BUDGET_MS = 2700;
     size_t total = 0;
+    // First, assign every component its best single-direction fallback, and collect
+    // the components that are candidates for the (more expensive) chord optimum.
+    vector<int> cand;
     for (int root = 0; root < n; ++root) {
         if (par[root] != root) continue;
         if (Nc[root] == 1) { dec[root] = 2; total += 1; continue; }
-        bool done = false;
-        if (!rasterData && Nc[root] >= 2 && Nc[root] <= 200000 && min(Vc[root], Hc[root]) < Nc[root] &&
-            duration_cast<milliseconds>(steady_clock::now() - t0).count() < BUDGET_MS) {
-            int s = bstart[root], e = bstart[root + 1];
-            tmp.clear(); tmp.reserve(e - s);
-            for (int k = s; k < e; ++k) tmp.push_back(r[bidx[k]]);
-            int oc = optimizeComponent(tmp, root, optOut, CAP);
-            if (oc >= 0) { useOpt[root] = 1; total += oc; done = true; }
-        }
-        if (!done) {
-            int best = Nc[root]; char d = 2;
-            if (Vc[root] < best) { best = Vc[root]; d = 0; }
-            if (Hc[root] < best) { best = Hc[root]; d = 1; }
-            dec[root] = d; total += best;
+        int best = Nc[root]; char d = 2;
+        if (Vc[root] < best) { best = Vc[root]; d = 0; }
+        if (Hc[root] < best) { best = Hc[root]; d = 1; }
+        dec[root] = d; total += best;
+        if (!rasterData && Nc[root] <= 200000 && min(Vc[root], Hc[root]) < Nc[root])
+            cand.push_back(root);
+    }
+    // Process candidates smallest-first: cheap components have the best gain-per-time
+    // ratio, so under a fixed budget this captures the most reduction.
+    sort(cand.begin(), cand.end(), [&](int a, int b){ return Nc[a] < Nc[b]; });
+    for (int root : cand) {
+        if (duration_cast<milliseconds>(steady_clock::now() - t0).count() >= BUDGET_MS) break;
+        int s = bstart[root], e = bstart[root + 1];
+        tmp.clear(); tmp.reserve(e - s);
+        for (int k = s; k < e; ++k) tmp.push_back(r[bidx[k]]);
+        int oc = optimizeComponent(tmp, root, optOut, CAP);
+        if (oc >= 0) {
+            int best = Nc[root];
+            if (Vc[root] < best) best = Vc[root];
+            if (Hc[root] < best) best = Hc[root];
+            useOpt[root] = 1; total = total - best + oc;
         }
     }
 
