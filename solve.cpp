@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <array>
 #include <chrono>
+#include <thread>
 using namespace std;
 using namespace std::chrono;
 
@@ -442,7 +443,6 @@ int main() {
     // unmergeable components fall back to the best single direction (no chord gain).
     vector<char> dec(n, 2), useOpt(n, 0);
     vector<RectC> optOut; optOut.reserve(1 << 16);
-    vector<Rect> tmp;
     const size_t CAP = 1 << 22;
     const long long BUDGET_MS = 2800;
     size_t total = 0;
@@ -467,18 +467,43 @@ int main() {
     // ratio, so under a fixed budget this captures the most reduction.
     if (worthOpt) sort(cand.begin(), cand.end(), [&](int a, int b){ return Nc[a] < Nc[b]; });
     else cand.clear();
-    for (int root : cand) {
-        if (duration_cast<milliseconds>(steady_clock::now() - t0).count() >= BUDGET_MS) break;
-        int s = bstart[root], e = bstart[root + 1];
-        tmp.clear(); tmp.reserve(e - s);
-        for (int k = s; k < e; ++k) tmp.push_back(r[bidx[k]]);
-        int oc = optimizeComponent(tmp, root, optOut, CAP);
-        if (oc >= 0) {
-            int best = Nc[root];
-            if (Vc[root] < best) best = Vc[root];
-            if (Hc[root] < best) best = Hc[root];
-            useOpt[root] = 1; total = total - best + oc;
+    // The per-component chord optimum is independent across components, so fan it out
+    // over the available cores. Each thread keeps its own output buffer and tally; the
+    // shared time budget (measured from t0) bounds total wall-clock regardless of NT.
+    int NT = (int)thread::hardware_concurrency(); if (NT < 1) NT = 1; if (NT > 4) NT = 4;
+    if ((int)cand.size() < NT) NT = max(1, (int)cand.size());
+    vector<vector<RectC>> tout(NT);
+    vector<long long> tdelta(NT, 0);
+    vector<vector<int>> topt(NT);
+    auto worker = [&](int tid) {
+        vector<Rect> tmpL;
+        for (size_t ci = tid; ci < cand.size(); ci += NT) {
+            if (duration_cast<milliseconds>(steady_clock::now() - t0).count() >= BUDGET_MS) break;
+            int root = cand[ci];
+            int s = bstart[root], e = bstart[root + 1];
+            tmpL.clear(); tmpL.reserve(e - s);
+            for (int k = s; k < e; ++k) tmpL.push_back(r[bidx[k]]);
+            int oc = optimizeComponent(tmpL, root, tout[tid], CAP);
+            if (oc >= 0) {
+                int best = Nc[root];
+                if (Vc[root] < best) best = Vc[root];
+                if (Hc[root] < best) best = Hc[root];
+                tdelta[tid] += (long long)oc - best;
+                topt[tid].push_back(root);
+            }
         }
+    };
+    if (NT <= 1) {
+        if (!cand.empty()) worker(0);
+    } else {
+        vector<thread> th;
+        for (int t = 0; t < NT; ++t) th.emplace_back(worker, t);
+        for (auto& x : th) x.join();
+    }
+    for (int t = 0; t < NT; ++t) {
+        total = (size_t)((long long)total + tdelta[t]);
+        for (int root : topt[t]) useOpt[root] = 1;
+        for (const RectC& q : tout[t]) optOut.push_back(q);
     }
 
     ocap = 1 << 24; opos = 0; obuf = (char*)malloc(ocap);
