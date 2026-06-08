@@ -4,3 +4,13 @@ run.log
 results.tsv
 *.o
 rectfun_benchmark.zip
+eval.log
+eval2.log
+eval_full.log
+run_1.log
+run_2.log
+err14.txt
+out14.txt
+solve_asan
+tools/opt_cc
+tools/__pycache__/
