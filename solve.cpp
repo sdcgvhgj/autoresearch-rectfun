@@ -459,9 +459,14 @@ int main() {
         if (!rasterData && Nc[root] <= 200000 && min(Vc[root], Hc[root]) < Nc[root])
             cand.push_back(root);
     }
+    // If the single-direction merge already leaves almost no room (total ~ n), the
+    // union is too fragmented for chord optimization to help; skip it to avoid
+    // burning the whole time budget on hundreds of thousands of unimprovable cells.
+    bool worthOpt = total <= (size_t)n * 97 / 100;
     // Process candidates smallest-first: cheap components have the best gain-per-time
     // ratio, so under a fixed budget this captures the most reduction.
-    sort(cand.begin(), cand.end(), [&](int a, int b){ return Nc[a] < Nc[b]; });
+    if (worthOpt) sort(cand.begin(), cand.end(), [&](int a, int b){ return Nc[a] < Nc[b]; });
+    else cand.clear();
     for (int root : cand) {
         if (duration_cast<milliseconds>(steady_clock::now() - t0).count() >= BUDGET_MS) break;
         int s = bstart[root], e = bstart[root + 1];
