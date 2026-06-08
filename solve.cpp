@@ -87,15 +87,14 @@ struct HBit {
     }
 };
 
-static HBit veb;
-static int* HI;
-static int* XS;
-static int* CMP;
 struct Ev { int x, lo, hi, type, comp; };
 
 // Decomposition with per-rectangle component tags propagated to output rectangles.
+// All sweep state (veb / HI / XS / CMP / ev / sorted / cnt) is passed in so two
+// directions can run concurrently on independent buffers.
 static void decompose(const vector<Rect>& rects, const vector<int>& comp, vector<RectC>& res,
-                      int maxSweep, vector<Ev>& ev, vector<Ev>& sorted, vector<int>& cnt) {
+                      int maxSweep, vector<Ev>& ev, vector<Ev>& sorted, vector<int>& cnt,
+                      HBit& veb, int* HI, int* XS, int* CMP) {
     int N = (int)rects.size();
     ev.resize((size_t)N * 2);
     size_t k = 0;
@@ -139,12 +138,12 @@ static void decompose(const vector<Rect>& rects, const vector<int>& comp, vector
 }
 
 // LSD radix sort of indices [0,n) by 64-bit keys[i] (assumes < 2^56).
-static vector<int> radixOrd, radixTmp;
-static void radixSortIdx(const vector<uint64_t>& keys) {
+// Uses caller-provided scratch buffers so it is reentrant across threads.
+static void radixSortIdx(const vector<uint64_t>& keys, vector<int>& ord, vector<int>& tmp) {
     int n = (int)keys.size();
-    radixOrd.resize(n); radixTmp.resize(n);
-    for (int i = 0; i < n; ++i) radixOrd[i] = i;
-    int* a = radixOrd.data(); int* b = radixTmp.data();
+    ord.resize(n); tmp.resize(n);
+    for (int i = 0; i < n; ++i) ord[i] = i;
+    int* a = ord.data(); int* b = tmp.data();
     int cnt[256];
     for (int shift = 0; shift < 64; shift += 8) {
         int c0[256]; for (int i = 0; i < 256; ++i) c0[i] = 0;
@@ -156,39 +155,39 @@ static void radixSortIdx(const vector<uint64_t>& keys) {
         for (int i = 0; i < n; ++i) { uint64_t k = keys[a[i]]; b[cnt[(k >> shift) & 255]++] = a[i]; }
         std::swap(a, b);
     }
-    if (a != radixOrd.data()) radixOrd.swap(radixTmp);
+    if (a != ord.data()) ord.swap(tmp);
 }
 
-// Single directional merges (preserve component tag).
-static vector<RectC> mergeTmp;
-static vector<uint64_t> mergeKey;
+// Single directional merges (preserve component tag). Reentrant: local buffers only.
 static void hmergeOnce(vector<RectC>& r) {
-    int n = (int)r.size(); mergeKey.resize(n);
+    int n = (int)r.size();
+    vector<uint64_t> key(n);
     for (int i = 0; i < n; ++i)
-        mergeKey[i] = ((uint64_t)(uint32_t)r[i].y1 << 36) | ((uint64_t)(uint32_t)r[i].y2 << 15) | (uint32_t)r[i].x1;
-    radixSortIdx(mergeKey);
-    mergeTmp.clear(); mergeTmp.reserve(n);
+        key[i] = ((uint64_t)(uint32_t)r[i].y1 << 36) | ((uint64_t)(uint32_t)r[i].y2 << 15) | (uint32_t)r[i].x1;
+    vector<int> ord, tmp; radixSortIdx(key, ord, tmp);
+    vector<RectC> out; out.reserve(n);
     for (int i = 0; i < n; ++i) {
-        const RectC& c = r[radixOrd[i]];
-        if (!mergeTmp.empty()) { RectC& p = mergeTmp.back();
+        const RectC& c = r[ord[i]];
+        if (!out.empty()) { RectC& p = out.back();
             if (p.y1 == c.y1 && p.y2 == c.y2 && p.x2 + 1 == c.x1) { p.x2 = c.x2; continue; } }
-        mergeTmp.push_back(c);
+        out.push_back(c);
     }
-    r.swap(mergeTmp);
+    r.swap(out);
 }
 static void vmergeOnce(vector<RectC>& r) {
-    int n = (int)r.size(); mergeKey.resize(n);
+    int n = (int)r.size();
+    vector<uint64_t> key(n);
     for (int i = 0; i < n; ++i)
-        mergeKey[i] = ((uint64_t)(uint32_t)r[i].x1 << 36) | ((uint64_t)(uint32_t)r[i].x2 << 21) | (uint32_t)r[i].y1;
-    radixSortIdx(mergeKey);
-    mergeTmp.clear(); mergeTmp.reserve(n);
+        key[i] = ((uint64_t)(uint32_t)r[i].x1 << 36) | ((uint64_t)(uint32_t)r[i].x2 << 21) | (uint32_t)r[i].y1;
+    vector<int> ord, tmp; radixSortIdx(key, ord, tmp);
+    vector<RectC> out; out.reserve(n);
     for (int i = 0; i < n; ++i) {
-        const RectC& c = r[radixOrd[i]];
-        if (!mergeTmp.empty()) { RectC& p = mergeTmp.back();
+        const RectC& c = r[ord[i]];
+        if (!out.empty()) { RectC& p = out.back();
             if (p.x1 == c.x1 && p.x2 == c.x2 && p.y2 + 1 == c.y1) { p.y2 = c.y2; continue; } }
-        mergeTmp.push_back(c);
+        out.push_back(c);
     }
-    r.swap(mergeTmp);
+    r.swap(out);
 }
 
 // ---------- connected components (edge adjacency) ----------
@@ -398,31 +397,46 @@ int main() {
     bool rasterData = (n > 0 && unitHW >= (long)n * 99 / 100);
 
     int U = max(maxX, maxY) + 2;
-    veb.init(U);
-    HI = (int*)malloc((size_t)U * sizeof(int));
-    XS = (int*)malloc((size_t)U * sizeof(int));
-    CMP = (int*)malloc((size_t)U * sizeof(int));
 
     // Connected components, normalized to roots.
     computeComponents(r, maxX, maxY);
     vector<int> comp(n);
     for (int i = 0; i < n; ++i) comp[i] = find(i);
 
-    vector<Ev> ev, sorted; vector<int> cnt;
-
-    // Always run the recovery merge: even when the global decomposition fragments
-    // above n, individual (non-singleton) components still shrink, which is exactly
-    // what the per-component selection needs to reduce m on scattered cases (c15-18).
-    vector<RectC> vert; vert.reserve(r.size());
-    decompose(r, comp, vert, maxX, ev, sorted, cnt);
-    hmergeOnce(vert);
-
     vector<Rect> rt(r.size());
     for (size_t i = 0; i < r.size(); ++i) rt[i] = {r[i].y1, r[i].y2, r[i].x1, r[i].x2};
+
+    // The vertical and horizontal decompositions are independent, so run them on two
+    // threads with private sweep state. This roughly halves preprocessing latency,
+    // widening the time margin on the heavy 2D cases. Each keeps the recovery merge:
+    // even when the global decomposition fragments above n, individual non-singleton
+    // components still shrink, feeding the per-component selection (cases 15-18).
+    vector<RectC> vert; vert.reserve(r.size());
     vector<RectC> horiz; horiz.reserve(r.size());
-    decompose(rt, comp, horiz, maxY, ev, sorted, cnt);
-    for (RectC& q : horiz) q = {q.y1, q.y2, q.x1, q.x2, q.comp}; // transpose back
-    vmergeOnce(horiz);
+    auto doVert = [&]() {
+        HBit veb; veb.init(U);
+        int* HI = (int*)malloc((size_t)U * sizeof(int));
+        int* XS = (int*)malloc((size_t)U * sizeof(int));
+        int* CMP = (int*)malloc((size_t)U * sizeof(int));
+        vector<Ev> ev, sorted; vector<int> cnt;
+        decompose(r, comp, vert, maxX, ev, sorted, cnt, veb, HI, XS, CMP);
+        hmergeOnce(vert);
+        free(HI); free(XS); free(CMP);
+        for (int l = 0; l < veb.L; ++l) free(veb.lev[l]);
+    };
+    auto doHoriz = [&]() {
+        HBit veb; veb.init(U);
+        int* HI = (int*)malloc((size_t)U * sizeof(int));
+        int* XS = (int*)malloc((size_t)U * sizeof(int));
+        int* CMP = (int*)malloc((size_t)U * sizeof(int));
+        vector<Ev> ev, sorted; vector<int> cnt;
+        decompose(rt, comp, horiz, maxY, ev, sorted, cnt, veb, HI, XS, CMP);
+        for (RectC& q : horiz) q = {q.y1, q.y2, q.x1, q.x2, q.comp}; // transpose back
+        vmergeOnce(horiz);
+        free(HI); free(XS); free(CMP);
+        for (int l = 0; l < veb.L; ++l) free(veb.lev[l]);
+    };
+    { thread th(doHoriz); doVert(); th.join(); }
 
     // Per-component counts for the heuristic fallback (vert / horiz / input).
     vector<int> Vc(n, 0), Hc(n, 0), Nc(n, 0);
