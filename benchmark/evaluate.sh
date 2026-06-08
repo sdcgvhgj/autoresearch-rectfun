@@ -18,7 +18,10 @@ CHECKER="$SCRIPT_DIR/checker"
 DATA_DIR="$SCRIPT_DIR/data"
 OUTPUT_DIR="${SCRIPT_DIR}/eval_output"
 
+# 硬超时: 超过则由 timeout 直接杀进程
 TIMEOUT_SEC=5
+# 软时限: 实际判定阈值 (毫秒), 用时超过即判 TLE
+TIME_LIMIT_MS=3500
 
 SOLUTION="${1:-}"
 if [ -z "$SOLUTION" ]; then
@@ -55,7 +58,7 @@ echo -e "${CYAN}  RectFun 自动评测${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo "选手程序: $SOLUTION"
 echo "评估数据: $TOTAL_CASES 组"
-echo "单组时限: ${TIMEOUT_SEC}s"
+echo "单组时限: $(awk "BEGIN { printf \"%.1f\", $TIME_LIMIT_MS / 1000 }")s"
 echo ""
 printf "%-5s %10s %10s %8s %8s %s\n" "No." "n" "m" "Time(ms)" "Score" "Verdict"
 echo "--------------------------------------------------------------------"
@@ -116,10 +119,10 @@ for idx in "${!DATA_FILES[@]}"; do
         fi
         score="$(awk "BEGIN { printf \"%.2f\", ${score_raw:-0} }")"
 
-        # 超 1s 算超时
-        if [ "$elapsed_ms" -gt 3500 ]; then
+        # 超过软时限算超时
+        if [ "$elapsed_ms" -gt "$TIME_LIMIT_MS" ]; then
             printf "%-5s %10s %10s %8s %8s %s\n" \
-                "$case_no" "$n" "$m" "${elapsed_ms}ms" "0.00" "${RED}TLE(>1s)${NC}"
+                "$case_no" "$n" "$m" "${elapsed_ms}ms" "0.00" "${RED}TLE(>${TIME_LIMIT_MS}ms)${NC}"
             TIMED_OUT=$((TIMED_OUT + 1))
             FAILED=$((FAILED + 1))
             continue
