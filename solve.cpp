@@ -444,7 +444,7 @@ int main() {
     vector<RectC> optOut; optOut.reserve(1 << 16);
     vector<Rect> tmp;
     const size_t CAP = 1 << 22;
-    const long long BUDGET_MS = 2700;
+    const long long BUDGET_MS = 2800;
     size_t total = 0;
     // First, assign every component its best single-direction fallback, and collect
     // the components that are candidates for the (more expensive) chord optimum.
