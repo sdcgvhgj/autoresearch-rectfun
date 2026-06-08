@@ -383,13 +383,18 @@ int main() {
     int n = parseInt(p);
     vector<Rect> r(n);
     int maxX = 1, maxY = 1;
+    long unitHW = 0;
     for (int i = 0; i < n; ++i) {
         r[i].x1 = parseInt(p); r[i].x2 = parseInt(p);
         r[i].y1 = parseInt(p); r[i].y2 = parseInt(p);
         if (r[i].x2 > maxX) maxX = r[i].x2;
         if (r[i].y2 > maxY) maxY = r[i].y2;
+        if (r[i].y1 == r[i].y2 || r[i].x1 == r[i].x2) ++unitHW;
     }
     free(data);
+    // Pure raster-row / raster-column data: the single-direction merge is already
+    // optimal, so dense chord optimization only wastes time. Detect and skip it.
+    bool rasterData = (n > 0 && unitHW >= (long)n * 99 / 100);
 
     int U = max(maxX, maxY) + 2;
     veb.init(U);
@@ -438,14 +443,14 @@ int main() {
     vector<char> dec(n, 2), useOpt(n, 0);
     vector<RectC> optOut; optOut.reserve(1 << 16);
     vector<Rect> tmp;
-    const size_t CAP = 1 << 13;
-    const long long BUDGET_MS = 600;
+    const size_t CAP = 1 << 22;
+    const long long BUDGET_MS = 2700;
     size_t total = 0;
     for (int root = 0; root < n; ++root) {
         if (par[root] != root) continue;
         if (Nc[root] == 1) { dec[root] = 2; total += 1; continue; }
         bool done = false;
-        if (Nc[root] >= 2 && Nc[root] <= 48 && min(Vc[root], Hc[root]) < Nc[root] &&
+        if (!rasterData && Nc[root] >= 2 && Nc[root] <= 200000 && min(Vc[root], Hc[root]) < Nc[root] &&
             duration_cast<milliseconds>(steady_clock::now() - t0).count() < BUDGET_MS) {
             int s = bstart[root], e = bstart[root + 1];
             tmp.clear(); tmp.reserve(e - s);
